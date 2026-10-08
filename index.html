@@ -365,16 +365,19 @@ button,input,select,textarea{font:inherit;color:inherit}
     <label class="check" id="webRow"><input type="checkbox" id="setWeb"> <span>Internetsuche erlauben (für News, aktuelle Infos; kostet pro Suche etwas Guthaben)</span></label>
 
     <h3>Bilder</h3>
-    <p class="small">Jarvis kann Bilder erzeugen (nur in der eigenen App). «Kostenlos» braucht keine Anmeldung. «OpenAI» liefert die realistischsten Bilder, braucht aber einen eigenen OpenAI-Schlüssel (platform.openai.com) und kostet pro Bild ein paar Rappen.</p>
+    <p class="small">Jarvis kann Bilder erzeugen (nur in der eigenen App). «Google Gemini» und «OpenAI» liefern sehr realistische Bilder, brauchen aber einen eigenen Schlüssel und kosten pro Bild ein paar Rappen. «Kostenlos» braucht keine Anmeldung, die Qualität ist aber einfach.</p>
     <div class="row">
       <div class="field"><label for="setImgProv">Bildgenerator</label>
         <select id="setImgProv">
-          <option value="free">Kostenlos – FLUX (Pollinations)</option>
-          <option value="openai">OpenAI – beste Qualität</option>
+          <option value="gemini">Google Gemini – sehr realistisch (empfohlen)</option>
+          <option value="openai">OpenAI – sehr realistisch</option>
+          <option value="free">Kostenlos – einfache Qualität</option>
         </select>
       </div>
       <div class="field"><label for="setImgModel">OpenAI-Bildmodell</label><input type="text" id="setImgModel" placeholder="gpt-image-1"></div>
     </div>
+    <div class="field"><label for="setGeminiKey">Gemini API-Schlüssel (aistudio.google.com/apikey)</label><input type="password" id="setGeminiKey" placeholder="AIza…"></div>
+    <div class="field"><label for="setGeminiModel">Gemini-Bildmodell</label><input type="text" id="setGeminiModel" placeholder="gemini-2.5-flash-image"></div>
     <div class="field"><label for="setOpenAIKey">OpenAI API-Schlüssel (nur für «OpenAI»)</label><input type="password" id="setOpenAIKey" placeholder="sk-…"></div>
 
     <h3>Gedächtnis</h3>
@@ -425,7 +428,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 };
 
-const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, useLocation: true, stepGoal: 10000, imgProvider: "free", imgModel: "gpt-image-1", openaiKey: "", apiKey: "", apiModel: "claude-sonnet-5-5" };
+const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, useLocation: true, stepGoal: 10000, imgProvider: "free", imgModel: "gpt-image-1", openaiKey: "", geminiKey: "", geminiModel: "gemini-2.5-flash-image", apiKey: "", apiModel: "claude-sonnet-5-5" };
 const S = {
   settings: Object.assign({}, DEFAULTS, store.get("jarvis.settings", {})),
   history: store.get("jarvis.history", []),
@@ -1477,7 +1480,7 @@ const WEATHER_TOOL = {
 };
 function buildTools() {
   const api = S.backend === "api";
-  return [...(api ? [IMAGE_TOOL] : []), ...(mcp ? MCP_TOOLS : []), ...(api && gReady() ? [CONTACT_TOOL] : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(api ? [WEATHER_TOOL, ...SBB_TOOLS] : []), ...(api && S.settings.useLocation ? [LOCATION_TOOL] : []), STEP_TOOL, REVIEW_TOOL, ...MEMORY_TOOLS, ...TOOLS];
+  return [...(api ? [IMAGE_TOOL] : []), WHATSAPP_TOOL, CALL_TOOL, ...(mcp ? MCP_TOOLS : []), ...(api && gReady() ? [CONTACT_TOOL] : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(api ? [WEATHER_TOOL, ...SBB_TOOLS] : []), ...(api && S.settings.useLocation ? [LOCATION_TOOL] : []), STEP_TOOL, REVIEW_TOOL, ...MEMORY_TOOLS, ...TOOLS];
 }
 const webOn = () => S.backend === "api" && !!S.settings.webSearch;
 
@@ -1669,6 +1672,24 @@ async function openaiImage(prompt, size, signal) {
   if (d && d.url) return d.url;
   throw new Error("OpenAI hat kein Bild geliefert.");
 }
+async function geminiImage(prompt, size, signal) {
+  const key = (S.settings.geminiKey || "").trim();
+  if (!key) throw new Error("Für Gemini-Bilder fehlt der Gemini-Schlüssel in den Einstellungen (aistudio.google.com/apikey).");
+  const model = S.settings.geminiModel || "gemini-2.5-flash-image";
+  const ratio = size[0] === size[1] ? "1:1" : size[0] > size[1] ? "3:2" : "2:3";
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: "POST", signal, headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseModalities: ["IMAGE", "TEXT"], imageConfig: { aspectRatio: ratio } } })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error("Gemini: " + (j.error?.message || "HTTP " + r.status));
+  const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+  const img = parts.find(p => p.inlineData || p.inline_data);
+  if (!img) { const why = j.candidates && j.candidates[0] && j.candidates[0].finishReason; throw new Error("Gemini hat kein Bild geliefert" + (why ? " (" + why + ")" : "") + ". Formuliere den Wunsch anders."); }
+  const d = img.inlineData || img.inline_data;
+  const bin = atob(d.data), arr = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+  return URL.createObjectURL(new Blob([arr], { type: d.mimeType || d.mime_type || "image/png" }));
+}
 async function freeImage(prompt, size, signal) {
   const seed = Math.floor(Math.random() * 1e9);
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1500))}?${qs({ width: size[0], height: size[1], model: "flux", nologo: "true", private: "true", safe: "true", seed })}`;
@@ -1697,7 +1718,8 @@ const IMAGE_TOOL = {
     const wait = document.createElement("div"); wait.className = "gen-wait"; wait.textContent = "Erzeuge Bild …"; box.append(wait);
     setInterim("Erzeuge Bild …");
     try {
-      const src = S.settings.imgProvider === "openai" ? await openaiImage(prompt, size, ctx.signal) : await freeImage(prompt, size, ctx.signal);
+      const prov = S.settings.imgProvider;
+      const src = prov === "openai" ? await openaiImage(prompt, size, ctx.signal) : prov === "gemini" ? await geminiImage(prompt, size, ctx.signal) : await freeImage(prompt, size, ctx.signal);
       wait.remove();
       const im = document.createElement("img"); im.src = src; im.alt = String(i.caption || prompt).slice(0, 200); im.loading = "lazy";
       im.onload = () => scrollDown(true);
@@ -1707,11 +1729,79 @@ const IMAGE_TOOL = {
       acts.append(dl);
       box.append(im); if (cap.textContent) box.append(cap); box.append(acts);
       setInterim("");
-      return { status: "Bild erzeugt und im Chat angezeigt", generator: S.settings.imgProvider === "openai" ? "OpenAI" : "FLUX (kostenlos)" };
+      return { status: "Bild erzeugt und im Chat angezeigt", generator: prov === "openai" ? "OpenAI" : prov === "gemini" ? "Google Gemini" : "kostenlos" };
     } catch (e) {
       wait.textContent = "Bild konnte nicht erzeugt werden."; setInterim("");
       throw new Error(e && e.message ? e.message : "Bildgenerator nicht erreichbar.");
     }
+  }
+};
+
+
+/* ---------- WhatsApp: Nachricht vorbereiten (Senden tippt der Nutzer) ---------- */
+function waNumber(raw) {
+  let n = String(raw || "").replace(/[^\d+]/g, "");
+  if (!n) return "";
+  if (n.startsWith("+")) n = n.slice(1);
+  else if (n.startsWith("00")) n = n.slice(2);
+  else if (n.startsWith("0")) n = "41" + n.slice(1);
+  return /^\d{8,15}$/.test(n) ? n : "";
+}
+const WHATSAPP_TOOL = {
+  name: "whatsapp_message",
+  description: "Bereitet eine WhatsApp-Nachricht vor und zeigt einen Knopf, der WhatsApp mit dem fertigen Text öffnet; der Nutzer tippt dort selbst auf Senden. Telefonnummer vorher mit contacts_search suchen (falls verfügbar). Ohne Nummer wählt der Nutzer den Kontakt in WhatsApp. Lesen von WhatsApp-Nachrichten ist nicht möglich.",
+  inputSchema: { type: "object", properties: { phone: { type: "string", description: "Telefonnummer, z. B. 079 123 45 67 oder +41791234567" }, name: { type: "string", description: "Name des Empfängers (für die Anzeige)" }, text: { type: "string", description: "Nachrichtentext, locker und natürlich, wie der Nutzer schreiben würde" } }, required: ["text"] },
+  execute(i) {
+    const text = String(i.text || "").trim().slice(0, 3000); if (!text) throw new Error("Text fehlt.");
+    const num = waNumber(i.phone);
+    const url = (num ? `https://wa.me/${num}` : "https://wa.me/") + "?text=" + encodeURIComponent(text);
+    const m = addMsg("system", "");
+    m.el.querySelector(".meta span").textContent = "WhatsApp";
+    const box = document.createElement("div"); box.className = "confirm";
+    const h = document.createElement("strong"); h.textContent = "Nachricht an " + (i.name ? String(i.name) : num ? "+" + num : "Kontakt deiner Wahl");
+    const p = document.createElement("div"); p.style.whiteSpace = "pre-wrap"; p.textContent = text;
+    const row = document.createElement("div"); row.className = "row";
+    const a = document.createElement("a"); a.className = "btn yes"; a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "In WhatsApp öffnen";
+    const cp = document.createElement("button"); cp.type = "button"; cp.className = "btn"; cp.textContent = "Text kopieren";
+    cp.onclick = async () => { try { await navigator.clipboard.writeText(text); cp.textContent = "Kopiert"; } catch { cp.textContent = "Kopieren nicht möglich"; } };
+    row.append(a, cp); box.append(h, p, row);
+    m.el.querySelector(".body").replaceWith(box);
+    scrollDown(true);
+    return { status: "Nachricht vorbereitet. Der Nutzer muss auf «In WhatsApp öffnen» tippen und dort selbst senden.", empfaenger: i.name || (num ? "+" + num : "noch nicht gewählt") };
+  }
+};
+
+
+/* ---------- Anrufen ---------- */
+function telNumber(raw) {
+  let n = String(raw || "").replace(/[^\d+]/g, "");
+  if (n.startsWith("00")) n = "+" + n.slice(2);
+  return /^\+?\d{6,15}$/.test(n) ? n : "";
+}
+const CALL_TOOL = {
+  name: "call_phone",
+  description: "Startet einen Telefonanruf (oder WhatsApp-/FaceTime-Anruf) zu einer Nummer. Nummer vorher mit contacts_search suchen. Das Telefon fragt den Nutzer noch einmal zur Bestätigung.",
+  inputSchema: { type: "object", properties: { phone: { type: "string" }, name: { type: "string" }, via: { type: "string", enum: ["telefon", "facetime", "whatsapp"], description: "Standard: telefon" } }, required: ["phone"] },
+  execute(i) {
+    const num = telNumber(i.phone); if (!num) throw new Error("Ungültige Telefonnummer.");
+    const via = i.via || "telefon";
+    const wa = waNumber(num);
+    const url = via === "facetime" ? "facetime-audio:" + num : via === "whatsapp" ? "https://wa.me/" + wa : "tel:" + num;
+    const label = via === "facetime" ? "FaceTime-Anruf starten" : via === "whatsapp" ? "WhatsApp öffnen (dort Anruf tippen)" : "Jetzt anrufen";
+    const m = addMsg("system", "");
+    m.el.querySelector(".meta span").textContent = "Anruf";
+    const box = document.createElement("div"); box.className = "confirm";
+    const h = document.createElement("strong"); h.textContent = (i.name ? String(i.name) + " · " : "") + num;
+    const row = document.createElement("div"); row.className = "row";
+    const a = document.createElement("a"); a.className = "btn yes"; a.href = url; a.textContent = "📞 " + label; if (via === "whatsapp") { a.target = "_blank"; a.rel = "noopener"; }
+    const cp = document.createElement("button"); cp.type = "button"; cp.className = "btn"; cp.textContent = "Nummer kopieren";
+    cp.onclick = async () => { try { await navigator.clipboard.writeText(num); cp.textContent = "Kopiert"; } catch { cp.textContent = num; } };
+    row.append(a, cp); box.append(h, row);
+    m.el.querySelector(".body").replaceWith(box);
+    scrollDown(true);
+    stopListening();
+    if (via !== "whatsapp") setTimeout(() => { try { location.href = url; } catch {} }, 600);
+    return { status: "Anruf wird gestartet. Das Telefon fragt den Nutzer zur Bestätigung; falls nichts passiert, tippt er auf den Knopf im Chat.", nummer: num };
   }
 };
 
@@ -1814,6 +1904,8 @@ function rules(voice, withTools, prefetched) {
     S.backend === "api" && gReady() ? `- KONTAKTE: Bevor du jemandem eine Mail schreibst, such die Adresse mit contacts_search. Bei mehreren Treffern frag nach.` : ``,
     `- SCHRITTE: Mit steps kennst du die Schritte des Nutzers (aus der iPhone-Health-App, Tagesziel ${S.settings.stepGoal || 10000}). Erwähne sie im Tagesbriefing (gestern) und im Wochenrückblick. Fehlen Daten, sag kurz, dass der Kurzbefehl noch eingerichtet werden muss.`,
     S.backend === "api" ? `- BILDER: Nutze generate_image NUR, wenn der Nutzer ausdrücklich ein Bild, Foto, Logo, Hintergrundbild oder eine Illustration verlangt. Niemals ungefragt, niemals zur Veranschaulichung von Fakten, Fahrplänen, Wetter oder Antworten. Bildgeneratoren können keine Schrift: vermeide Texte, Tafeln, Bildschirme mit Inhalt und Schilder im Bild ("no text, no letters, no signage"); will der Nutzer Text im Bild, sag ihm, dass die Schrift wahrscheinlich unleserlich wird. Schreib den prompt auf Englisch und sehr detailliert; für realistische Bilder: beginne mit "Ultra-detailed photorealistic photograph of …", beschreibe Hauptmotiv, Umgebung, Tageszeit und Licht (z. B. golden hour, soft diffused light), Kamera und Objektiv (z. B. Sony A7R IV, 35mm f/1.8), Tiefenschärfe, Materialien und Texturen, und ende mit "sharp focus, high resolution, natural colors, no text, no watermark". Ein klares Hauptmotiv, nicht zu viele Elemente. Wähle das passende Format. Danach nur ein kurzer Satz (z. B. was du dargestellt hast), keine lange Beschreibung; im Sprachmodus: "Das Bild ist im Chat." Erzeuge keine realistischen Bilder von echten, erkennbaren Personen (auch nicht vom Nutzer oder Prominenten), keine sexuellen Inhalte oder Nacktheit, keine Gewalt- oder Hassbilder, keine gefälschten Dokumente und keine geschützten Figuren oder Marken-Logos; biete stattdessen eine eigene Variante an.` : `- BILDER: Bilder erzeugen kannst du nur in der eigenen Jarvis-App (palmino77.github.io/Jarvis), nicht in dieser Ansicht.`,
+    `- ANRUFEN: "Ruf X an": Nummer mit contacts_search finden (bei Familie wie Mama/Papa auch nach "Mama", "Mami", "Mutter" bzw. dem gespeicherten Namen suchen und im GEDÄCHTNIS nachsehen). Bei mehreren Nummern kurz nachfragen (Mobil bevorzugen). Dann call_phone. Kennt der Nutzer die Nummer und will, dass du sie dir merkst, speichere sie mit remember (z. B. "Mama: +41 79 …"). Sag nur kurz: "Ich rufe Mama an." Findest du keine Nummer, frag danach.`,
+    `- WHATSAPP: Du kannst WhatsApp-Nachrichten nur VORBEREITEN (whatsapp_message), nicht selbst senden und keine Chats lesen; WhatsApp erlaubt das für private Konten nicht. Such die Nummer zuerst mit contacts_search (falls verfügbar), sonst frag nach der Nummer oder lass den Nutzer den Kontakt in WhatsApp wählen. Schreib den Text so, wie der Nutzer selbst schreiben würde (locker, Du-Form, gern Schweizerdeutsch, wenn er es so will), nicht im Butler-Stil. Sag danach kurz: "Tippen Sie auf «In WhatsApp öffnen» und dann auf Senden."`,
     `- WOCHENRÜCKBLICK: Wenn der Nutzer einen Wochenrückblick will: hol die Termine der letzten 7 Tage (calendar_events), erledigte Aufgaben (tasks_list mit completedLastDays 7), week_stats (Fokus-Runden, Schritte) und die Termine der kommenden 7 Tage. Fasse zusammen: Was war los, was wurde erledigt, Fokus- und Schritt-Bilanz mit Durchschnitt, was nächste Woche ansteht, und eine anerkennende, trockene Schlussbemerkung. Höchstens 10-12 Sätze, gut vorlesbar.`,
     S.backend === "api" && S.settings.useLocation ? `- STANDORT: Mit my_location bestimmst du den aktuellen Standort. Nutze ihn bei "Wo bin ich?", "hier", "in der Nähe", Restaurants/Läden/Apotheken in der Nähe (danach web_search mit Ort), Wegbeschreibungen und Fahrplänen ab hier. Nenne Ort und Ortsteil, keine Koordinaten vorlesen. Den Kartenlink nur im Textmodus zeigen.` : ``,
     S.backend === "api" ? `- WETTER: Für Wetterfragen nutze das Werkzeug weather (Heimatort: ${S.settings.home || "nicht eingetragen"}). Antworte konkret: Temperatur, Wetterlage, Regenrisiko, ob Jacke/Schirm nötig.` : `- WETTER: In dieser Ansicht hast du keine Wetterdaten; sag das ehrlich.`,
@@ -2390,7 +2482,7 @@ function openSettings() {
   $("setRate").value = s.rate; $("setPitch").value = s.pitch; $("setAuto").checked = s.autoListen; $("setMale").checked = s.male; $("setProfile").value = s.profile; $("setBoot").checked = s.bootSound; $("setVoiceStart").checked = s.autoVoice; renderMemory();
   $("setHome").value = s.home || ""; $("setHumor").value = s.humor || "normal"; $("setSkin").value = s.skin || "blau"; $("setWeb").checked = !!s.webSearch; $("webRow").hidden = S.backend !== "api"; $("setLoc").checked = !!s.useLocation; $("locRow").hidden = S.backend !== "api";
   $("setStepGoal").value = s.stepGoal || 10000;
-  $("setImgProv").value = s.imgProvider || "free"; $("setImgModel").value = s.imgModel || "gpt-image-1"; $("setOpenAIKey").value = s.openaiKey || "";
+  $("setImgProv").value = s.imgProvider || "free"; $("setImgModel").value = s.imgModel || "gpt-image-1"; $("setOpenAIKey").value = s.openaiKey || ""; $("setGeminiKey").value = s.geminiKey || ""; $("setGeminiModel").value = s.geminiModel || "gemini-2.5-flash-image";
   $("syncState").textContent = S.backend !== "api" ? "nur in der eigenen App" : !gReady() ? "aus (Google nicht verbunden)" : S.lastSync ? "aktiv – zuletzt " + new Date(S.lastSync).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "aktiv";
   $("setKey").value = s.apiKey; $("setApiModel").value = s.apiModel; $("setGClient").value = s.googleClientId || ""; renderGoogleUi();
   $("rateVal").textContent = Number(s.rate).toFixed(2); $("pitchVal").textContent = Number(s.pitch).toFixed(2);
@@ -2405,7 +2497,7 @@ function closeSettings() {
   s.rate = Number($("setRate").value); s.pitch = Number($("setPitch").value);
   s.autoListen = $("setAuto").checked; s.voice = $("setVoice").value; s.male = $("setMale").checked; s.profile = $("setProfile").value; s.bootSound = $("setBoot").checked; s.autoVoice = $("setVoiceStart").checked;
   s.home = $("setHome").value.trim(); s.humor = $("setHumor").value; s.skin = $("setSkin").value; s.webSearch = $("setWeb").checked; s.useLocation = $("setLoc").checked; s.stepGoal = Math.max(1000, Math.min(100000, Math.round(Number($("setStepGoal").value) || 10000))); applySkin();
-  s.imgProvider = $("setImgProv").value; s.imgModel = $("setImgModel").value.trim() || "gpt-image-1"; s.openaiKey = $("setOpenAIKey").value.trim();
+  s.imgProvider = $("setImgProv").value; s.imgModel = $("setImgModel").value.trim() || "gpt-image-1"; s.openaiKey = $("setOpenAIKey").value.trim(); s.geminiKey = $("setGeminiKey").value.trim(); s.geminiModel = $("setGeminiModel").value.trim() || "gemini-2.5-flash-image";
   s.apiKey = $("setKey").value.trim(); s.apiModel = $("setApiModel").value.trim() || DEFAULTS.apiModel;
   const newCid = $("setGClient").value.trim();
   if (newCid !== (s.googleClientId || "")) { s.googleClientId = newCid; G.client = null; if (newCid) gLoadLib().then(gEnsureClient).catch(() => {}); }
