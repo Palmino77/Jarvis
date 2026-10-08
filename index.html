@@ -352,6 +352,7 @@ button,input,select,textarea{font:inherit;color:inherit}
       </div>
       <div class="field" style="justify-content:flex-end"><button class="btn" type="button" id="exportBtn">Gespräch als Datei speichern</button></div>
     </div>
+    <label class="check" id="locRow"><input type="checkbox" id="setLoc"> <span>Standort verwenden (für «Wo bin ich?», Wetter hier und Dinge in der Nähe)</span></label>
     <label class="check" id="webRow"><input type="checkbox" id="setWeb"> <span>Internetsuche erlauben (für News, aktuelle Infos; kostet pro Suche etwas Guthaben)</span></label>
 
     <h3>Gedächtnis</h3>
@@ -402,7 +403,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 };
 
-const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, apiKey: "", apiModel: "claude-sonnet-5-5" };
+const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, useLocation: true, apiKey: "", apiModel: "claude-sonnet-5-5" };
 const S = {
   settings: Object.assign({}, DEFAULTS, store.get("jarvis.settings", {})),
   history: store.get("jarvis.history", []),
@@ -1335,14 +1336,40 @@ const FOCUS_TOOLS = [
 
 /* ---------- Wetter (nur eigene App, Open-Meteo) ---------- */
 const WMO = { 0: "klar", 1: "überwiegend klar", 2: "teils bewölkt", 3: "bedeckt", 45: "Nebel", 48: "Raureif-Nebel", 51: "leichter Niesel", 53: "Niesel", 55: "starker Niesel", 56: "gefrierender Niesel", 57: "gefrierender Niesel", 61: "leichter Regen", 63: "Regen", 65: "starker Regen", 66: "gefrierender Regen", 67: "gefrierender Regen", 71: "leichter Schneefall", 73: "Schneefall", 75: "starker Schneefall", 77: "Schneegriesel", 80: "leichte Regenschauer", 81: "Regenschauer", 82: "heftige Regenschauer", 85: "Schneeschauer", 86: "starke Schneeschauer", 95: "Gewitter", 96: "Gewitter mit Hagel", 99: "schweres Gewitter mit Hagel" };
-function geoPos() { return new Promise((res, rej) => { if (!navigator.geolocation) return rej(); navigator.geolocation.getCurrentPosition(p => res(p.coords), () => rej(), { timeout: 8000, maximumAge: 3600000 }); }); }
+function geoPos() {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error("Dieses Gerät kann den Standort nicht bestimmen."));
+    navigator.geolocation.getCurrentPosition(p => res(p.coords), e => rej(new Error(e && e.code === 1 ? "Der Standortzugriff wurde nicht erlaubt. Der Nutzer muss ihn in den Browser- bzw. iPhone-Einstellungen erlauben." : "Der Standort konnte gerade nicht bestimmt werden.")), { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 });
+  });
+}
+async function whereAmI(signal) {
+  const c = await geoPos();
+  const out = { breite: +c.latitude.toFixed(5), laenge: +c.longitude.toFixed(5), genauigkeit_m: Math.round(c.accuracy || 0) };
+  try {
+    const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?${qs({ latitude: c.latitude, longitude: c.longitude, localityLanguage: "de" })}`, { signal }).then(x => x.json());
+    out.ort = r.city || r.locality || ""; out.ortsteil = r.locality && r.locality !== r.city ? r.locality : undefined;
+    out.plz = r.postcode || undefined; out.kanton = r.principalSubdivision || undefined; out.land = r.countryName || undefined;
+  } catch {}
+  out.karte = `https://www.google.com/maps?q=${c.latitude},${c.longitude}`;
+  return out;
+}
+const LOCATION_TOOL = {
+  name: "my_location",
+  description: "Bestimmt den aktuellen Standort des Nutzers (Ort, Ortsteil, PLZ, Kanton, Land, Koordinaten, Kartenlink). Für 'Wo bin ich?', Wetter am aktuellen Ort, Dinge in der Nähe (danach web_search mit dem Ortsnamen) oder Wegbeschreibungen.",
+  async execute(i, ctx) { return whereAmI(ctx.signal); }
+};
 const WEATHER_TOOL = {
   name: "weather",
   description: "Aktuelles Wetter und Vorhersage für 4 Tage (Temperatur, Wetterlage, Regenwahrscheinlichkeit, Wind). Ohne Ort: Heimatort des Nutzers bzw. aktueller Standort.",
   inputSchema: { type: "object", properties: { place: { type: "string", description: "Ortsname, z. B. 'Zürich'" } } },
   async execute(i, ctx) {
-    let place = String(i.place || S.settings.home || "").trim(), lat, lon, name;
-    if (place) {
+    let place = String(i.place || "").trim(), lat, lon, name;
+    if (!place && S.settings.useLocation) {
+      try { const c = await geoPos(); lat = c.latitude; lon = c.longitude; name = "aktueller Standort"; } catch {}
+    }
+    if (!place && lat === undefined) place = String(S.settings.home || "").trim();
+    if (lat !== undefined) { /* Standort schon bekannt */ }
+    else if (place) {
       const g = await fetch(`https://geocoding-api.open-meteo.com/v1/search?${qs({ name: place, count: 1, language: "de", format: "json" })}`, { signal: ctx.signal }).then(r => r.json());
       const h = g.results && g.results[0]; if (!h) throw new Error(`Ort «${place}» nicht gefunden.`);
       lat = h.latitude; lon = h.longitude; name = [h.name, h.admin1, h.country_code].filter(Boolean).join(", ");
@@ -1360,7 +1387,7 @@ const WEATHER_TOOL = {
   }
 };
 function buildTools() {
-  return [...(mcp ? MCP_TOOLS : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(S.backend === "api" ? [WEATHER_TOOL] : []), ...MEMORY_TOOLS, ...TOOLS];
+  return [...(mcp ? MCP_TOOLS : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(S.backend === "api" ? [WEATHER_TOOL] : []), ...(S.backend === "api" && S.settings.useLocation ? [LOCATION_TOOL] : []), ...MEMORY_TOOLS, ...TOOLS];
 }
 const webOn = () => S.backend === "api" && !!S.settings.webSearch;
 
@@ -1459,6 +1486,7 @@ function rules(voice, withTools, prefetched) {
     webOn()
       ? `- INTERNET: Mit web_search kannst du im Internet suchen. Nutze es für alles Aktuelle (News, Resultate, Preise, Öffnungszeiten, Fahrpläne, neue Produkte) und wenn du unsicher bist. Nenne kurz die Quelle (Name der Website). Im Sprachmodus keine URLs vorlesen. Geräte steuern kannst du nicht.`
       : `- Du hast keinen Internetzugang und kannst keine Geräte steuern. Erfinde keine aktuellen Daten wie Nachrichten oder Kurse; sag ehrlich, dass dir der Zugriff fehlt.`,
+    S.backend === "api" && S.settings.useLocation ? `- STANDORT: Mit my_location bestimmst du den aktuellen Standort. Nutze ihn bei "Wo bin ich?", "hier", "in der Nähe", Restaurants/Läden/Apotheken in der Nähe (danach web_search mit Ort), Wegbeschreibungen und Fahrplänen ab hier. Nenne Ort und Ortsteil, keine Koordinaten vorlesen. Den Kartenlink nur im Textmodus zeigen.` : ``,
     S.backend === "api" ? `- WETTER: Für Wetterfragen nutze das Werkzeug weather (Heimatort: ${S.settings.home || "nicht eingetragen"}). Antworte konkret: Temperatur, Wetterlage, Regenrisiko, ob Jacke/Schirm nötig.` : `- WETTER: In dieser Ansicht hast du keine Wetterdaten; sag das ehrlich.`,
     withTools ? `- AUFGABEN: Mit tasks_list, task_add und task_done verwaltest du die To-do-Liste${useGTasks() ? " (Google Tasks, auch in der Google-Tasks-App sichtbar)" : " (gespeichert in diesem Gerät)"}. Einkäufe kommen in die Liste "Einkaufsliste". Bestätige kurz, was du eingetragen oder abgehakt hast.` : ``,
     withTools ? `- FOKUS: "Lernsession", "Pomodoro" oder "Fokus" startest du mit focus_start (Standard 25 Min Fokus, 5 Min Pause, 4 Runden). Die Seite meldet sich selbst bei jedem Wechsel.` : ``,
@@ -2030,7 +2058,7 @@ function openSettings() {
   const s = S.settings;
   $("setName").value = s.name; $("setTier").value = s.tier; $("setLang").value = s.lang;
   $("setRate").value = s.rate; $("setPitch").value = s.pitch; $("setAuto").checked = s.autoListen; $("setMale").checked = s.male; $("setProfile").value = s.profile; $("setBoot").checked = s.bootSound; $("setVoiceStart").checked = s.autoVoice; renderMemory();
-  $("setHome").value = s.home || ""; $("setHumor").value = s.humor || "normal"; $("setSkin").value = s.skin || "blau"; $("setWeb").checked = !!s.webSearch; $("webRow").hidden = S.backend !== "api";
+  $("setHome").value = s.home || ""; $("setHumor").value = s.humor || "normal"; $("setSkin").value = s.skin || "blau"; $("setWeb").checked = !!s.webSearch; $("webRow").hidden = S.backend !== "api"; $("setLoc").checked = !!s.useLocation; $("locRow").hidden = S.backend !== "api";
   $("setKey").value = s.apiKey; $("setApiModel").value = s.apiModel; $("setGClient").value = s.googleClientId || ""; renderGoogleUi();
   $("rateVal").textContent = Number(s.rate).toFixed(2); $("pitchVal").textContent = Number(s.pitch).toFixed(2);
   $("setVoice").value = s.voice;
@@ -2043,7 +2071,7 @@ function closeSettings() {
   s.tier = $("setTier").value; s.lang = $("setLang").value;
   s.rate = Number($("setRate").value); s.pitch = Number($("setPitch").value);
   s.autoListen = $("setAuto").checked; s.voice = $("setVoice").value; s.male = $("setMale").checked; s.profile = $("setProfile").value; s.bootSound = $("setBoot").checked; s.autoVoice = $("setVoiceStart").checked;
-  s.home = $("setHome").value.trim(); s.humor = $("setHumor").value; s.skin = $("setSkin").value; s.webSearch = $("setWeb").checked; applySkin();
+  s.home = $("setHome").value.trim(); s.humor = $("setHumor").value; s.skin = $("setSkin").value; s.webSearch = $("setWeb").checked; s.useLocation = $("setLoc").checked; applySkin();
   s.apiKey = $("setKey").value.trim(); s.apiModel = $("setApiModel").value.trim() || DEFAULTS.apiModel;
   const newCid = $("setGClient").value.trim();
   if (newCid !== (s.googleClientId || "")) { s.googleClientId = newCid; G.client = null; if (newCid) gLoadLib().then(gEnsureClient).catch(() => {}); }
