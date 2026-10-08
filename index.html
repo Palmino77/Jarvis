@@ -352,6 +352,10 @@ button,input,select,textarea{font:inherit;color:inherit}
       </div>
       <div class="field" style="justify-content:flex-end"><button class="btn" type="button" id="exportBtn">Gespräch als Datei speichern</button></div>
     </div>
+    <div class="row">
+      <div class="field"><label for="setStepGoal">Tagesziel Schritte</label><input type="text" id="setStepGoal" inputmode="numeric" placeholder="10000"></div>
+      <div class="field"><label>Synchronisation</label><span class="small" id="syncState" style="margin:6px 0 0">–</span></div>
+    </div>
     <label class="check" id="locRow"><input type="checkbox" id="setLoc"> <span>Standort verwenden (für «Wo bin ich?», Wetter hier und Dinge in der Nähe)</span></label>
     <label class="check" id="webRow"><input type="checkbox" id="setWeb"> <span>Internetsuche erlauben (für News, aktuelle Infos; kostet pro Suche etwas Guthaben)</span></label>
 
@@ -403,7 +407,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
 };
 
-const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, useLocation: true, apiKey: "", apiModel: "claude-sonnet-5-5" };
+const DEFAULTS = { name: "Sir", tier: "quick", voice: "", rate: 0.95, pitch: 0.85, lang: "de-CH", autoListen: true, speakText: true, male: true, profile: "film", bootSound: true, autoVoice: true, googleClientId: "", home: "", humor: "normal", skin: "blau", webSearch: true, useLocation: true, stepGoal: 10000, apiKey: "", apiModel: "claude-sonnet-5-5" };
 const S = {
   settings: Object.assign({}, DEFAULTS, store.get("jarvis.settings", {})),
   history: store.get("jarvis.history", []),
@@ -425,8 +429,10 @@ const S = {
 // Einmalige Umstellung: Vorlesen standardmässig an
 if (S.settings.v === 2) { S.settings.speakText = true; S.settings.v = 3; try { localStorage.setItem("jarvis.settings", JSON.stringify(S.settings)); } catch {} }
 if (S.settings.v !== 2 && S.settings.v !== 3) { S.settings.speakText = true; S.settings.v = 3; try { localStorage.setItem("jarvis.settings", JSON.stringify(S.settings)); } catch {} }
-const saveSettings = () => store.set("jarvis.settings", S.settings);
-const saveHistory = () => store.set("jarvis.history", S.history.slice(-60));
+const syncMeta = store.get("jarvis.syncMeta", {});
+function markChanged(part) { syncMeta[part] = Date.now(); store.set("jarvis.syncMeta", syncMeta); try { scheduleSync(); } catch {} }
+const saveSettings = () => { store.set("jarvis.settings", S.settings); markChanged("settings"); };
+const saveHistory = () => { store.set("jarvis.history", S.history.slice(-60)); markChanged("history"); };
 
 /* ---------- Telemetrie ---------- */
 function tick() {
@@ -585,7 +591,7 @@ const SUGGESTIONS_ALL = [
   "Schau dir ein Foto an",
   "Erstell mir einen Lernplan für meine nächste Prüfung"
 ];
-const SUGGESTIONS = [...SUGGESTIONS_ALL.slice(0, 4), "Wie wird das Wetter?", "Starte eine Lernsession", "Was steht auf meiner To-do-Liste?", "Lernjournal für heute"];
+const SUGGESTIONS = [...SUGGESTIONS_ALL.slice(0, 4), "Wie wird das Wetter?", "Starte eine Lernsession", "Was steht auf meiner To-do-Liste?", "Lernjournal für heute", "Wochenrückblick", "Wie viele Schritte habe ich heute?"];
 const BRIEF_PROMPT = "Gib mir mein Tagesbriefing für heute: Termine und neue Mails.";
 function chipText(s) { if (s === "Schau dir ein Foto an") { if (S.imagesOk) $("camInput").click(); return ""; } return s === "Tagesbriefing" ? BRIEF_PROMPT : s === "Frag mich ab" ? "Lernmodus: Frag mich ab. Schlag mir zuerst drei Themen zur Auswahl vor." : s; }
 function renderLog() {
@@ -701,7 +707,7 @@ const TOOLS = [
       const text = String(i.text || "").trim().slice(0, 500);
       if (!text) throw new Error("Leere Notiz.");
       const n = { id: (S.notes.at(-1)?.id || 0) + 1, text, at: new Date().toISOString() };
-      S.notes.push(n); store.set("jarvis.notes", S.notes);
+      S.notes.push(n); store.set("jarvis.notes", S.notes); markChanged("notes");
       return n;
     }
   },
@@ -718,7 +724,7 @@ const TOOLS = [
       const before = S.notes.length;
       S.notes = S.notes.filter(n => n.id !== Number(i.id));
       if (S.notes.length === before) throw new Error("Keine Notiz mit dieser id.");
-      store.set("jarvis.notes", S.notes);
+      store.set("jarvis.notes", S.notes); markChanged("notes");
       return "gelöscht";
     }
   }
@@ -1013,7 +1019,7 @@ const MCP_TOOLS = [
 
 /* ---------- Gedächtnis ---------- */
 S.memory = store.get("jarvis.memory", []);
-const saveMemory = () => store.set("jarvis.memory", S.memory.slice(-80));
+const saveMemory = () => { store.set("jarvis.memory", S.memory.slice(-80)); markChanged("memory"); };
 const SECRET_RE = /passwort|password|pin\b|iban|kreditkarte|karten-?nummer|cvv|ahv|pass-?nummer|\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b|\bsk-ant-/i;
 function renderMemory() {
   const ul = $("memList"); ul.innerHTML = "";
@@ -1062,7 +1068,7 @@ function memoryBlock() {
 
 /* ---------- Google direkt (für die eigene App ausserhalb von Claude) ---------- */
 const G = Object.assign({ token: null, exp: 0, client: null }, store.get("jarvis.gtoken", {}));
-const G_SCOPES = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/tasks";
+const G_SCOPES = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/tasks https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/contacts.other.readonly";
 const gReady = () => !!G.token && Date.now() < G.exp - 60000 && G.scopes === G_SCOPES;
 const gNeedConsent = () => store.get("jarvis.gconsentScopes", "") !== G_SCOPES;
 const gConfigured = () => S.backend === "api" && !!(S.settings.googleClientId || "").trim();
@@ -1285,14 +1291,14 @@ function activateGoogle(fresh) {
   mcp = gmcp; diag.mcp = "Google direkt verbunden";
   [CAL, MAIL, DRIVE].forEach(k => acct[k] = "ok");
   renderAcct(); renderGoogleUi();
-  if (!was) startOverview();
+  if (!was) { startOverview(); syncNow(false); }
   if (fresh) { $("notice").hidden = true; addMsg("system", "Google ist verbunden: Kalender, Gmail und Drive sind bereit."); }
 }
 
 
 /* ---------- Aufgaben & Einkaufsliste (Google Tasks oder lokal) ---------- */
 S.tasks = store.get("jarvis.tasks", []);
-const saveTasks = () => store.set("jarvis.tasks", S.tasks.slice(-300));
+const saveTasks = () => { store.set("jarvis.tasks", S.tasks.slice(-300)); markChanged("tasks"); };
 const TASKB = "https://tasks.googleapis.com/tasks/v1";
 const useGTasks = () => S.backend === "api" && gReady();
 async function gTaskListId(name) {
@@ -1308,11 +1314,13 @@ const TASK_TOOLS = [
   {
     name: "tasks_list",
     description: "Zeigt offene Aufgaben einer Liste (ohne Angabe: Hauptliste/To-do). Für die Einkaufsliste list='Einkaufsliste'. Liefert id, Titel, Notiz, Fälligkeit.",
-    inputSchema: { type: "object", properties: { list: { type: "string", description: "Listenname, z. B. 'Einkaufsliste'; leer = Hauptliste" } } },
+    inputSchema: { type: "object", properties: { list: { type: "string", description: "Listenname, z. B. 'Einkaufsliste'; leer = Hauptliste" }, completedLastDays: { type: "number", description: "Statt offener Aufgaben die in den letzten X Tagen erledigten zeigen (für Rückblicke)" } } },
     async execute(i) {
       const list = String(i.list || "").trim();
+      const doneDays = Math.round(Number(i.completedLastDays) || 0);
       if (useGTasks()) {
-        try { const id = await gTaskListId(list); const r = await gFetch(`${TASKB}/lists/${encodeURIComponent(id)}/tasks?${qs({ showCompleted: false, maxResults: 100 })}`); return { quelle: "Google Tasks", liste: list || "Meine Aufgaben", aufgaben: (r.items || []).filter(t => t.title).map(t => ({ id: t.id, title: t.title, notes: t.notes, due: t.due ? t.due.slice(0, 10) : undefined })) }; }
+        try { const id = await gTaskListId(list); const r = await gFetch(`${TASKB}/lists/${encodeURIComponent(id)}/tasks?${qs(doneDays ? { showCompleted: true, showHidden: true, completedMin: new Date(Date.now() - doneDays * 86400000).toISOString(), maxResults: 100 } : { showCompleted: false, maxResults: 100 })}`);
+          if (doneDays) return { quelle: "Google Tasks", erledigt: (r.items || []).filter(t => t.status === "completed").map(t => ({ title: t.title, erledigt: (t.completed || "").slice(0, 10) })) }; return { quelle: "Google Tasks", liste: list || "Meine Aufgaben", aufgaben: (r.items || []).filter(t => t.title).map(t => ({ id: t.id, title: t.title, notes: t.notes, due: t.due ? t.due.slice(0, 10) : undefined })) }; }
         catch (e) { throw gErr(e); }
       }
       return { quelle: "lokal", liste: list || "Meine Aufgaben", aufgaben: S.tasks.filter(t => !t.done && (t.list || "") === list).map(t => ({ id: t.id, title: t.title, notes: t.notes, due: t.due })) };
@@ -1372,6 +1380,7 @@ function focusPhase(phase) {
     if (!S.focus) return;
     const nm = S.settings.name || "Sir";
     if (f.phase === "work") {
+      logFocusRound();
       if (f.round >= f.rounds) { focusAnnounce(`Fokus-Session beendet, ${nm}. ${f.rounds} Runden${f.topic ? " " + f.topic : ""} geschafft. Ausgezeichnete Arbeit.`); S.focus = null; renderTimers(); return; }
       focusAnnounce(`Runde ${f.round} geschafft, ${nm}. ${f.brk} Minuten Pause.`); focusPhase("break");
     } else { f.round++; focusAnnounce(`Pause vorbei, ${nm}. Runde ${f.round} von ${f.rounds} beginnt.`); focusPhase("work"); }
@@ -1449,9 +1458,176 @@ const WEATHER_TOOL = {
   }
 };
 function buildTools() {
-  return [...(mcp ? MCP_TOOLS : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(S.backend === "api" ? [WEATHER_TOOL] : []), ...(S.backend === "api" && S.settings.useLocation ? [LOCATION_TOOL] : []), ...MEMORY_TOOLS, ...TOOLS];
+  const api = S.backend === "api";
+  return [...(mcp ? MCP_TOOLS : []), ...(api && gReady() ? [CONTACT_TOOL] : []), ...TASK_TOOLS, ...FOCUS_TOOLS, ...(api ? [WEATHER_TOOL, ...SBB_TOOLS] : []), ...(api && S.settings.useLocation ? [LOCATION_TOOL] : []), STEP_TOOL, REVIEW_TOOL, ...MEMORY_TOOLS, ...TOOLS];
 }
 const webOn = () => S.backend === "api" && !!S.settings.webSearch;
+
+
+/* ---------- Schritte (vom iPhone-Kurzbefehl) & Fokus-Statistik ---------- */
+S.steps = store.get("jarvis.steps", {});      // { "2026-10-08": 8423 }
+S.focusLog = store.get("jarvis.focusLog", {}); // { "2026-10-08": 3 }
+const dayKey = (d = new Date()) => isoLocal(d).slice(0, 10);
+function saveSteps() { store.set("jarvis.steps", S.steps); markChanged("steps"); }
+function logFocusRound() { const k = dayKey(); S.focusLog[k] = (S.focusLog[k] || 0) + 1; store.set("jarvis.focusLog", S.focusLog); markChanged("focusLog"); }
+(function readStepsFromLink() {
+  const h = location.hash || "";
+  const m = h.match(/schritte[=:](\d{1,6})/i) || h.match(/steps[=:](\d{1,6})/i);
+  if (!m) return;
+  const k = dayKey(), n = Number(m[1]);
+  if (!S.steps[k] || n >= S.steps[k]) { S.steps[k] = n; saveSteps(); }
+  const rest = h.replace(/[&#]?(schritte|steps)[=:]\d+/ig, "").replace(/^#&/, "#");
+  try { history.replaceState(null, "", location.pathname + location.search + (rest && rest !== "#" ? rest : "")); } catch {}
+})();
+const STEP_TOOL = {
+  name: "steps",
+  description: "Schritte des Nutzers: heute und die letzten Tage (aus der iPhone-Health-App, übermittelt beim Öffnen über den Kurzbefehl). Liefert pro Tag die Anzahl, den Durchschnitt und das Tagesziel.",
+  inputSchema: { type: "object", properties: { days: { type: "number", description: "Anzahl Tage, Standard 7" } } },
+  execute(i) {
+    const n = Math.min(60, Math.max(1, Math.round(Number(i.days) || 7)));
+    const out = [];
+    for (let k = 0; k < n; k++) { const d = new Date(); d.setDate(d.getDate() - k); const key = dayKey(d); out.push({ datum: key, schritte: S.steps[key] ?? null }); }
+    const known = out.filter(x => x.schritte != null);
+    return { heute: S.steps[dayKey()] ?? "unbekannt (Jarvis wurde heute noch nicht über den Kurzbefehl geöffnet)", ziel: S.settings.stepGoal || 10000, tage: out, durchschnitt: known.length ? Math.round(known.reduce((a, x) => a + x.schritte, 0) / known.length) : null, hinweis: known.length ? undefined : "Noch keine Schrittdaten. Der Nutzer muss den Kurzbefehl einrichten (siehe Anleitung im Chat)." };
+  }
+};
+const REVIEW_TOOL = {
+  name: "week_stats",
+  description: "Statistik der letzten 7 Tage aus Jarvis selbst: Fokus-Runden pro Tag, Schritte pro Tag, erledigte lokale Aufgaben, Anzahl Gespräche. Für den Wochenrückblick.",
+  execute() {
+    const tage = [];
+    for (let k = 6; k >= 0; k--) { const d = new Date(); d.setDate(d.getDate() - k); const key = dayKey(d); tage.push({ datum: key, fokusRunden: S.focusLog[key] || 0, schritte: S.steps[key] ?? null }); }
+    const since = Date.now() - 7 * 86400000;
+    return { tage, fokusRundenTotal: tage.reduce((a, t) => a + t.fokusRunden, 0), nachrichtenDieseWoche: S.history.filter(m => m.role === "user" && m.at && new Date(m.at).getTime() > since).length, lokaleAufgabenErledigt: S.tasks.filter(t => t.done).length };
+  }
+};
+
+/* ---------- SBB-Fahrplan (transport.opendata.ch, nur eigene App) ---------- */
+const TRB = "https://transport.opendata.ch/v1";
+const hhmm = t => t ? new Date(t).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "";
+async function nearestStation(signal) {
+  const c = await geoPos();
+  const r = await fetch(`${TRB}/locations?${qs({ x: c.latitude, y: c.longitude, type: "station" })}`, { signal }).then(x => x.json());
+  const st = (r.stations || []).find(x => x.id) || (r.stations || [])[0];
+  if (!st) throw new Error("Keine Haltestelle in der Nähe gefunden.");
+  return st.name;
+}
+const isHere = v => !v || /^(hier|standort|aktueller standort|von hier|my location)$/i.test(String(v).trim());
+const SBB_TOOLS = [
+  {
+    name: "sbb_connections",
+    description: "Sucht ÖV-Verbindungen in der Schweiz (Zug, Bus, Tram) mit echten Abfahrtszeiten, Gleis, Umsteigen und Verspätungen. from leer oder 'hier' = nächste Haltestelle am aktuellen Standort.",
+    inputSchema: { type: "object", properties: {
+      from: { type: "string", description: "Abfahrtsort/Haltestelle oder 'hier'" }, to: { type: "string" },
+      date: { type: "string", description: "YYYY-MM-DD, Standard heute" }, time: { type: "string", description: "HH:MM, Standard jetzt" },
+      arrival: { type: "boolean", description: "true = time ist gewünschte Ankunftszeit" } }, required: ["to"] },
+    async execute(i, ctx) {
+      const from = isHere(i.from) ? await nearestStation(ctx.signal) : String(i.from);
+      const p = { from, to: String(i.to), limit: 4 };
+      if (i.date) p.date = String(i.date); if (i.time) p.time = String(i.time); if (i.arrival) p.isArrivalTime = 1;
+      const r = await fetch(`${TRB}/connections?${qs(p)}`, { signal: ctx.signal }).then(x => x.json());
+      if (!r.connections || !r.connections.length) throw new Error("Keine Verbindung gefunden. Prüfe die Ortsnamen.");
+      return {
+        von: r.from?.name || from, nach: r.to?.name || i.to,
+        verbindungen: r.connections.map(c => ({
+          ab: hhmm(c.from.departure), an: hhmm(c.to.arrival), dauer: (c.duration || "").replace(/^00d/, "").replace(/:00$/, ""),
+          umsteigen: c.transfers, gleis: c.from.platform || undefined, verspaetung_min: c.from.delay || 0,
+          abschnitte: (c.sections || []).filter(x => x.journey).map(x => ({ linie: [x.journey.category, x.journey.number].filter(Boolean).join(" "), richtung: x.journey.to, von: x.departure.station.name, ab: hhmm(x.departure.departure), gleis: x.departure.platform || undefined, nach: x.arrival.station.name, an: hhmm(x.arrival.arrival) }))
+        }))
+      };
+    }
+  },
+  {
+    name: "sbb_departures",
+    description: "Abfahrtstafel einer Haltestelle (nächste Züge/Busse mit Linie, Ziel, Gleis, Verspätung). station leer oder 'hier' = nächste Haltestelle.",
+    inputSchema: { type: "object", properties: { station: { type: "string" } } },
+    async execute(i, ctx) {
+      const st = isHere(i.station) ? await nearestStation(ctx.signal) : String(i.station);
+      const r = await fetch(`${TRB}/stationboard?${qs({ station: st, limit: 10 })}`, { signal: ctx.signal }).then(x => x.json());
+      return { haltestelle: r.station?.name || st, abfahrten: (r.stationboard || []).map(b => ({ zeit: hhmm(b.stop.departure), linie: [b.category, b.number].filter(Boolean).join(" "), nach: b.to, gleis: b.stop.platform || undefined, verspaetung_min: b.stop.delay || 0 })) };
+    }
+  }
+];
+
+/* ---------- Google-Kontakte (nur eigene App) ---------- */
+let peopleWarm = false;
+const CONTACT_TOOL = {
+  name: "contacts_search",
+  description: "Sucht in den Google-Kontakten des Nutzers (und Personen, mit denen er gemailt hat) nach Name, E-Mail oder Telefonnummer. Nutze es, bevor du jemandem eine Mail schreibst.",
+  inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+  async execute(i) {
+    const q = String(i.query || "").trim(); if (!q) throw new Error("Suchbegriff fehlt.");
+    const PB = "https://people.googleapis.com/v1";
+    const map = p => ({ name: (p.names || [])[0]?.displayName, emails: (p.emailAddresses || []).map(e => e.value), telefon: (p.phoneNumbers || []).map(t => t.value) });
+    try {
+      if (!peopleWarm) { peopleWarm = true; await gFetch(`${PB}/people:searchContacts?${qs({ query: "", readMask: "names" })}`).catch(() => {}); await gFetch(`${PB}/otherContacts:search?${qs({ query: "", readMask: "names" })}`).catch(() => {}); }
+      const [a, b] = await Promise.all([
+        gFetch(`${PB}/people:searchContacts?${qs({ query: q, readMask: "names,emailAddresses,phoneNumbers", pageSize: 10 })}`).catch(() => ({})),
+        gFetch(`${PB}/otherContacts:search?${qs({ query: q, readMask: "names,emailAddresses,phoneNumbers", pageSize: 10 })}`).catch(() => ({}))
+      ]);
+      const res = [...(a.results || []), ...(b.results || [])].map(r => map(r.person || {})).filter(x => x.name || x.emails.length);
+      return res.length ? { treffer: res.slice(0, 10) } : "Kein Kontakt gefunden. Versuch mail_search mit dem Namen (z. B. from:anna).";
+    } catch (e) { throw new Error(e && e.message ? e.message : "Kontakte nicht erreichbar."); }
+  }
+};
+
+/* ---------- Synchronisation über Google Drive (versteckter App-Ordner) ---------- */
+const SYNC_NAME = "jarvis-sync.json";
+const SYNC_SETTINGS = ["name", "tier", "rate", "pitch", "profile", "male", "humor", "skin", "home", "webSearch", "useLocation", "autoListen", "autoVoice", "bootSound", "speakText", "stepGoal"];
+let syncTimer = null, syncBusy = false, syncFileId = null;
+S.lastSync = store.get("jarvis.lastSync", 0);
+const syncOn = () => S.backend === "api" && gReady();
+function scheduleSync() { if (!syncOn()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 4000); }
+function syncPayload() {
+  const st = {}; SYNC_SETTINGS.forEach(k => { if (S.settings[k] !== undefined) st[k] = S.settings[k]; });
+  return { v: 1, savedAt: Date.now(), meta: syncMeta, settings: st, memory: S.memory, history: S.history.slice(-60), notes: S.notes, tasks: S.tasks, steps: S.steps, focusLog: S.focusLog };
+}
+function applyRemote(r) {
+  const rm = r.meta || {}; let changed = false;
+  const newer = part => (rm[part] || 0) > (syncMeta[part] || 0);
+  if (newer("settings") && r.settings) { SYNC_SETTINGS.forEach(k => { if (r.settings[k] !== undefined) S.settings[k] = r.settings[k]; }); store.set("jarvis.settings", S.settings); syncMeta.settings = rm.settings; applySkin(); loadVoices(); changed = true; }
+  if (Array.isArray(r.memory)) { // Gedächtnis zusammenführen
+    const seen = new Set(S.memory.map(m => m.text.toLowerCase())); let add = 0;
+    if (newer("memory")) { S.memory = r.memory.slice(); add = 1; }
+    else r.memory.forEach(m => { if (!seen.has(String(m.text).toLowerCase())) { S.memory.push({ ...m, id: (S.memory.at(-1)?.id || 0) + 1 }); add++; } });
+    if (add) { store.set("jarvis.memory", S.memory); changed = true; }
+  }
+  if (newer("history") && Array.isArray(r.history)) { S.history = r.history; store.set("jarvis.history", S.history); syncMeta.history = rm.history; renderLog(); changed = true; }
+  if (newer("notes") && Array.isArray(r.notes)) { S.notes = r.notes; store.set("jarvis.notes", S.notes); syncMeta.notes = rm.notes; }
+  if (newer("tasks") && Array.isArray(r.tasks)) { S.tasks = r.tasks; store.set("jarvis.tasks", S.tasks); syncMeta.tasks = rm.tasks; }
+  if (r.steps) { for (const [k, v] of Object.entries(r.steps)) if (!S.steps[k] || v > S.steps[k]) S.steps[k] = v; store.set("jarvis.steps", S.steps); }
+  if (r.focusLog) { for (const [k, v] of Object.entries(r.focusLog)) if (!S.focusLog[k] || v > S.focusLog[k]) S.focusLog[k] = v; store.set("jarvis.focusLog", S.focusLog); }
+  store.set("jarvis.syncMeta", syncMeta);
+  return changed;
+}
+async function syncNow(pullOnly) {
+  if (!syncOn() || syncBusy) return;
+  syncBusy = true;
+  try {
+    if (!syncFileId) {
+      const f = await gFetch(`${DRB}?${qs({ spaces: "appDataFolder", q: `name = '${SYNC_NAME}'`, fields: "files(id,modifiedTime)", pageSize: 1 })}`);
+      syncFileId = f.files && f.files[0] ? f.files[0].id : null;
+    }
+    if (syncFileId) {
+      const remote = await gFetch(`${DRB}/${syncFileId}?alt=media`);
+      const r = typeof remote === "string" ? JSON.parse(remote) : remote;
+      if (r && typeof r === "object") applyRemote(r);
+    }
+    if (pullOnly && syncFileId) return;
+    const body = JSON.stringify(syncPayload());
+    if (syncFileId) {
+      await gFetch(`https://www.googleapis.com/upload/drive/v3/files/${syncFileId}?uploadType=media`, { method: "PATCH", body, headers: { "Content-Type": "application/json" } });
+    } else {
+      const boundary = "jarvis" + Date.now();
+      const multi = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name: SYNC_NAME, parents: ["appDataFolder"] })}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`;
+      const c = await gFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", { method: "POST", body: multi, headers: { "Content-Type": "multipart/related; boundary=" + boundary } });
+      syncFileId = c.id;
+    }
+    S.lastSync = Date.now(); store.set("jarvis.lastSync", S.lastSync);
+  } catch (e) { S.syncError = e && e.message ? e.message : "Sync fehlgeschlagen"; }
+  finally { syncBusy = false; }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && syncOn()) syncNow(false); });
 
 /* ---------- Start: Animation & Sound ---------- */
 S.booting = true;
@@ -1548,6 +1724,10 @@ function rules(voice, withTools, prefetched) {
     webOn()
       ? `- INTERNET: Mit web_search kannst du im Internet suchen. Nutze es für alles Aktuelle (News, Resultate, Preise, Öffnungszeiten, Fahrpläne, neue Produkte) und wenn du unsicher bist. Nenne kurz die Quelle (Name der Website). Im Sprachmodus keine URLs vorlesen. Geräte steuern kannst du nicht.`
       : `- Du hast keinen Internetzugang und kannst keine Geräte steuern. Erfinde keine aktuellen Daten wie Nachrichten oder Kurse; sag ehrlich, dass dir der Zugriff fehlt.`,
+    S.backend === "api" ? `- ÖV/SBB: Für Zug-, Bus- und Tramverbindungen in der Schweiz nutze sbb_connections bzw. sbb_departures (echte Fahrplandaten, nicht web_search). "von hier" = from leer lassen. Nenne die nächsten 1-2 Verbindungen mit Abfahrt, Gleis, Umsteigen und Verspätung.` : `- ÖV: Fahrplandaten hast du in dieser Ansicht nicht.`,
+    S.backend === "api" && gReady() ? `- KONTAKTE: Bevor du jemandem eine Mail schreibst, such die Adresse mit contacts_search. Bei mehreren Treffern frag nach.` : ``,
+    `- SCHRITTE: Mit steps kennst du die Schritte des Nutzers (aus der iPhone-Health-App, Tagesziel ${S.settings.stepGoal || 10000}). Erwähne sie im Tagesbriefing (gestern) und im Wochenrückblick. Fehlen Daten, sag kurz, dass der Kurzbefehl noch eingerichtet werden muss.`,
+    `- WOCHENRÜCKBLICK: Wenn der Nutzer einen Wochenrückblick will: hol die Termine der letzten 7 Tage (calendar_events), erledigte Aufgaben (tasks_list mit completedLastDays 7), week_stats (Fokus-Runden, Schritte) und die Termine der kommenden 7 Tage. Fasse zusammen: Was war los, was wurde erledigt, Fokus- und Schritt-Bilanz mit Durchschnitt, was nächste Woche ansteht, und eine anerkennende, trockene Schlussbemerkung. Höchstens 10-12 Sätze, gut vorlesbar.`,
     S.backend === "api" && S.settings.useLocation ? `- STANDORT: Mit my_location bestimmst du den aktuellen Standort. Nutze ihn bei "Wo bin ich?", "hier", "in der Nähe", Restaurants/Läden/Apotheken in der Nähe (danach web_search mit Ort), Wegbeschreibungen und Fahrplänen ab hier. Nenne Ort und Ortsteil, keine Koordinaten vorlesen. Den Kartenlink nur im Textmodus zeigen.` : ``,
     S.backend === "api" ? `- WETTER: Für Wetterfragen nutze das Werkzeug weather (Heimatort: ${S.settings.home || "nicht eingetragen"}). Antworte konkret: Temperatur, Wetterlage, Regenrisiko, ob Jacke/Schirm nötig.` : `- WETTER: In dieser Ansicht hast du keine Wetterdaten; sag das ehrlich.`,
     withTools ? `- AUFGABEN: Mit tasks_list, task_add und task_done verwaltest du die To-do-Liste${useGTasks() ? " (Google Tasks, auch in der Google-Tasks-App sichtbar)" : " (gespeichert in diesem Gerät)"}. Einkäufe kommen in die Liste "Einkaufsliste". Bestätige kurz, was du eingetragen oder abgehakt hast.` : ``,
@@ -2121,6 +2301,8 @@ function openSettings() {
   $("setName").value = s.name; $("setTier").value = s.tier; $("setLang").value = s.lang;
   $("setRate").value = s.rate; $("setPitch").value = s.pitch; $("setAuto").checked = s.autoListen; $("setMale").checked = s.male; $("setProfile").value = s.profile; $("setBoot").checked = s.bootSound; $("setVoiceStart").checked = s.autoVoice; renderMemory();
   $("setHome").value = s.home || ""; $("setHumor").value = s.humor || "normal"; $("setSkin").value = s.skin || "blau"; $("setWeb").checked = !!s.webSearch; $("webRow").hidden = S.backend !== "api"; $("setLoc").checked = !!s.useLocation; $("locRow").hidden = S.backend !== "api";
+  $("setStepGoal").value = s.stepGoal || 10000;
+  $("syncState").textContent = S.backend !== "api" ? "nur in der eigenen App" : !gReady() ? "aus (Google nicht verbunden)" : S.lastSync ? "aktiv – zuletzt " + new Date(S.lastSync).toLocaleTimeString("de-CH", { hour: "2-digit", minute: "2-digit" }) : "aktiv";
   $("setKey").value = s.apiKey; $("setApiModel").value = s.apiModel; $("setGClient").value = s.googleClientId || ""; renderGoogleUi();
   $("rateVal").textContent = Number(s.rate).toFixed(2); $("pitchVal").textContent = Number(s.pitch).toFixed(2);
   $("setVoice").value = s.voice;
@@ -2133,7 +2315,7 @@ function closeSettings() {
   s.tier = $("setTier").value; s.lang = $("setLang").value;
   s.rate = Number($("setRate").value); s.pitch = Number($("setPitch").value);
   s.autoListen = $("setAuto").checked; s.voice = $("setVoice").value; s.male = $("setMale").checked; s.profile = $("setProfile").value; s.bootSound = $("setBoot").checked; s.autoVoice = $("setVoiceStart").checked;
-  s.home = $("setHome").value.trim(); s.humor = $("setHumor").value; s.skin = $("setSkin").value; s.webSearch = $("setWeb").checked; s.useLocation = $("setLoc").checked; applySkin();
+  s.home = $("setHome").value.trim(); s.humor = $("setHumor").value; s.skin = $("setSkin").value; s.webSearch = $("setWeb").checked; s.useLocation = $("setLoc").checked; s.stepGoal = Math.max(1000, Math.min(100000, Math.round(Number($("setStepGoal").value) || 10000))); applySkin();
   s.apiKey = $("setKey").value.trim(); s.apiModel = $("setApiModel").value.trim() || DEFAULTS.apiModel;
   const newCid = $("setGClient").value.trim();
   if (newCid !== (s.googleClientId || "")) { s.googleClientId = newCid; G.client = null; if (newCid) gLoadLib().then(gEnsureClient).catch(() => {}); }
